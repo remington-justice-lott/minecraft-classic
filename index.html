@@ -5,6 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
     <title>Minecraft Scratch - PC Beta Edition</title>
     <style>
+        /* */
         body { margin: 0; overflow: hidden; background-color: #78a7ff; font-family: sans-serif; user-select: none; -webkit-user-select: none; }
         canvas { display: block; position: absolute; top: 0; left: 0; width: 100vw; height: 100vh; z-index: 1; }
         
@@ -64,13 +65,16 @@
         #gamemode-btn { display: none; position: absolute; top: 15px; left: 15px; background: #bc7c24; border: 2px solid #000; color: white; padding: 10px 16px; font-weight: bold; border-radius: 4px; z-index: 15000; cursor: pointer; }
         #save-btn { display: none; position: absolute; top: 65px; left: 15px; background: #2d872d; border: 2px solid #000; color: white; padding: 10px 16px; font-weight: bold; border-radius: 4px; z-index: 15000; cursor: pointer; }
         
+        /* */
         /* 10 Hearts HUD System centered directly above Hotbar */
         #hud-container {
             display: none; position: absolute; bottom: 58px; left: 50%; transform: translateX(-50%);
             flex-direction: column; align-items: center; gap: 4px; z-index: 15000; pointer-events: none;
         }
         #hearts-row { display: flex; gap: 2px; }
+        #bubbles-row { display: none; gap: 2px; margin-bottom: 2px; }
         .heart { font-size: 20px; font-family: monospace; text-shadow: 2px 2px #000; line-height: 1; }
+        .bubble { font-size: 20px; font-family: monospace; text-shadow: 2px 2px #000; line-height: 1; color: #3b5ec2; }
         #hunger-status { color: #fff; font-family: monospace; font-size: 14px; text-shadow: 2px 2px #000; background: rgba(0,0,0,0.4); padding: 2px 10px; border-radius: 3px; }
 
         /* CLEAN MINECRAFT HOTBAR */
@@ -101,10 +105,38 @@
             border-top-color: #fff; border-left-color: #fff; display: flex; align-items: center; justify-content: center; cursor: pointer;
         }
         .inv-item:hover { background: #afafaf; }
+
+        /* */
+        /* YOU DIED SCREEN */
+        #death-screen {
+            position: absolute; top: 0; left: 0; width: 100vw; height: 100vh;
+            background-color: rgba(120, 0, 0, 0.85); display: none; flex-direction: column;
+            align-items: center; justify-content: center; z-index: 40000;
+        }
+        #death-title {
+            font-size: 72px; font-weight: 900; color: #ff5555;
+            font-family: 'Arial Black', Impact, sans-serif;
+            text-shadow: 4px 4px 0px #000;
+            margin-bottom: 20px;
+        }
+        #death-score {
+            color: #ffffff; font-size: 24px; font-family: monospace;
+            text-shadow: 2px 2px #000; margin-bottom: 40px;
+        }
+
+        /* Notifier styled overlay */
+        #ui-notifier {
+            position: absolute; top: 20px; left: 50%; transform: translateX(-50%);
+            background: rgba(0,0,0,0.85); border: 2px solid #555; color: #fff;
+            padding: 8px 18px; font-family: monospace; font-size: 14px; border-radius: 4px;
+            z-index: 50000; display: none; pointer-events: none;
+        }
     </style>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
 </head>
 <body>
+
+    <div id="ui-notifier">Notification</div>
 
     <div id="main-menu">
         <div id="menu-title-wrap">
@@ -146,6 +178,7 @@
     <button id="inv-toggle-btn">INVENTORY (E)</button>
     
     <div id="hud-container">
+        <div id="bubbles-row"></div>
         <div id="hearts-row"></div>
         <div id="hunger-status">Hunger: 20/20</div>
     </div>
@@ -170,7 +203,16 @@
         </div>
     </div>
 
+    <!-- -->
+    <div id="death-screen">
+        <div id="death-title">You died!</div>
+        <div id="death-score">Score: 0</div>
+        <button class="menu-btn" id="btn-respawn">Respawn</button>
+        <button class="menu-btn" id="btn-mainmenu" style="background: #5c5c5c;">Title Screen</button>
+    </div>
+
     <script>
+        /* */
         window.addEventListener('contextmenu', e => e.preventDefault());
 
         let currentRenderDistance = 10;
@@ -181,6 +223,19 @@
         let activeCrops = []; 
         let mobs = []; 
         let isMultiplayer = false, isHost = false;
+        let isDead = false;
+
+        // Drowning simulation metrics
+        let bubbles = 10;
+        let lastSubmergedCheckTime = 0;
+        let lastDrownDamageTime = 0;
+
+        // Survival inventory collections (Starts completely empty!)
+        let playerInventory = {
+            grass: 0, stone: 0, dirt: 0, wood: 0, leaves: 0,
+            sand: 0, torch: 0, cobble: 0, crops: 0, stonebrick: 0,
+            apple: 0, stick: 0
+        };
 
         const scene = new THREE.Scene();
         scene.background = new THREE.Color(0x78a7ff);
@@ -200,14 +255,15 @@
         directionalLight.position.set(12, 24, 6);
         scene.add(directionalLight);
 
-        // Music track setup
+        // Music setup
         const music = new Audio('https://files.catbox.moe/k1y8a0.mp3');
         music.loop = true;
 
         const itemColors = {
             grass: '#55a038', stone: '#737373', dirt: '#866043', wood: '#9c7c53',
             leaves: '#337a22', sand: '#dfd29e', water: '#3b5ec2', torch: '#ffcc44', 
-            cobble: '#616161', crops: '#a0cc44', stonebrick: '#525252'
+            cobble: '#616161', crops: '#a0cc44', stonebrick: '#525252',
+            apple: '#ff3333', stick: '#8b5a2b'
         };
         const blockTypes = Object.keys(itemColors);
         
@@ -215,7 +271,7 @@
         let hotbarSlots = [null, null, null, null, null, null, null, null, null];
         let selectedHotbarIdx = 0;
 
-        // Custom retro texture canvas synthesizers
+        /* */
         function generateNoiseTexture(type) {
             const canvas = document.createElement('canvas');
             canvas.width = 16; canvas.height = 16;
@@ -249,6 +305,12 @@
                     } else if (type === 'water') {
                         r = 40; g = 80; b = 200;
                         n = Math.sin(x * 0.6) * 12;
+                    } else if (type === 'apple') {
+                        r = 220; g = 30; b = 30;
+                        if (x > 6 && x < 10 && y < 4) { r = 40; g = 100; b = 20; }
+                    } else if (type === 'stick') {
+                        r = 139; g = 90; b = 43;
+                        if (x < 6 || x > 10) n -= 50;
                     } else {
                         r = 200; g = 200; b = 200;
                     }
@@ -270,7 +332,40 @@
             });
         });
 
-        const mobMat = new THREE.MeshLambertMaterial({ color: 0x3c703c });
+        function createZombieMesh() {
+            const group = new THREE.Group();
+            const headMat = new THREE.MeshLambertMaterial({ color: 0x3c703c }); 
+            const shirtMat = new THREE.MeshLambertMaterial({ color: 0x00aaaa }); 
+            const pantsMat = new THREE.MeshLambertMaterial({ color: 0x333399 }); 
+
+            const head = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.5, 0.5), headMat);
+            head.position.y = 1.75; 
+            group.add(head);
+
+            const body = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.75, 0.25), shirtMat);
+            body.position.y = 1.125;
+            group.add(body);
+
+            const legL = new THREE.Mesh(new THREE.BoxGeometry(0.24, 0.75, 0.25), pantsMat);
+            legL.position.set(0.13, 0.375, 0);
+            group.add(legL);
+
+            const legR = new THREE.Mesh(new THREE.BoxGeometry(0.24, 0.75, 0.25), pantsMat);
+            legR.position.set(-0.13, 0.375, 0);
+            group.add(legR);
+
+            const armL = new THREE.Mesh(new THREE.BoxGeometry(0.25, 0.75, 0.25), shirtMat);
+            armL.position.set(0.375, 1.125, 0.25);
+            armL.rotation.x = -Math.PI / 2;
+            group.add(armL);
+
+            const armR = new THREE.Mesh(new THREE.BoxGeometry(0.25, 0.75, 0.25), shirtMat);
+            armR.position.set(-0.375, 1.125, 0.25);
+            armR.rotation.x = -Math.PI / 2;
+            group.add(armR);
+
+            return group;
+        }
 
         const playerArm = new THREE.Mesh(new THREE.BoxGeometry(0.24, 0.24, 0.75), new THREE.MeshLambertMaterial({ color: 0xd2a679 }));
         playerArm.position.set(0.45, -0.4, -0.65);
@@ -294,7 +389,6 @@
 
         const defaultGeo = new THREE.BoxGeometry(1, 1, 1);
         
-        // Native ES6 Map declarations preventing WebGL startup crashes
         const activeWorldMap = new Map(); 
         const loadedColumns = new Map();
         let chunkGenerationQueue = [];
@@ -326,7 +420,72 @@
             }
         }
 
-        // Generate immediate platform blocks synchronously before rendering HUD to prevent player void drop
+        /* */
+        function spawnRandomTree(x, baseHeight, z) {
+            let treeType = Math.floor(Math.random() * 3); 
+            let startY = baseHeight + 1;
+            
+            if (treeType === 0) {
+                // Oakland standard tree style (4 logs, nested leaves)
+                for (let ty = 0; ty < 4; ty++) {
+                    const k = `${x},${startY + ty},${z}`;
+                    if (!brokenSet.has(k) && !savedPlaced[k]) buildBlockMesh(x, startY + ty, z, 'wood');
+                }
+                for (let lx = -1; lx <= 1; lx++) {
+                    for (let lz = -1; lz <= 1; lz++) {
+                        for (let ly = 0; ly < 2; ly++) {
+                            if (lx === 0 && lz === 0 && ly === 0) continue;
+                            const lk = `${x + lx},${startY + 3 + ly},${z + lz}`;
+                            if (!brokenSet.has(lk) && !savedPlaced[lk]) buildBlockMesh(x + lx, startY + 3 + ly, z + lz, 'leaves');
+                        }
+                    }
+                }
+                const capk = `${x},${startY + 5},${z}`;
+                if (!brokenSet.has(capk) && !savedPlaced[capk]) buildBlockMesh(x, startY + 5, z, 'leaves');
+            } else if (treeType === 1) {
+                // Tall Spruce Pine variation (6 logs, layered leaves)
+                for (let ty = 0; ty < 6; ty++) {
+                    const k = `${x},${startY + ty},${z}`;
+                    if (!brokenSet.has(k) && !savedPlaced[k]) buildBlockMesh(x, startY + ty, z, 'wood');
+                }
+                for (let lx = -2; lx <= 2; lx++) {
+                    for (let lz = -2; lz <= 2; lz++) {
+                        if (Math.abs(lx) === 2 && Math.abs(lz) === 2) continue;
+                        if (lx === 0 && lz === 0) continue;
+                        const lk = `${x + lx},${startY + 3},${z + lz}`;
+                        if (!brokenSet.has(lk) && !savedPlaced[lk]) buildBlockMesh(x + lx, startY + 3, z + lz, 'leaves');
+                    }
+                }
+                for (let lx = -1; lx <= 1; lx++) {
+                    for (let lz = -1; lz <= 1; lz++) {
+                        if (lx === 0 && lz === 0) continue;
+                        const lk1 = `${x + lx},${startY + 4},${z + lz}`;
+                        const lk2 = `${x + lx},${startY + 5},${z + lz}`;
+                        if (!brokenSet.has(lk1) && !savedPlaced[lk1]) buildBlockMesh(x + lx, startY + 4, z + lz, 'leaves');
+                        if (!brokenSet.has(lk2) && !savedPlaced[lk2]) buildBlockMesh(x + lx, startY + 5, z + lz, 'leaves');
+                    }
+                }
+                const capk = `${x},${startY + 6},${z}`;
+                if (!brokenSet.has(capk) && !savedPlaced[capk]) buildBlockMesh(x, startY + 6, z, 'leaves');
+            } else {
+                // Dense round birch style bush tree (3 logs, dense leaf pack)
+                for (let ty = 0; ty < 3; ty++) {
+                    const k = `${x},${startY + ty},${z}`;
+                    if (!brokenSet.has(k) && !savedPlaced[k]) buildBlockMesh(x, startY + ty, z, 'wood');
+                }
+                for (let lx = -1; lx <= 1; lx++) {
+                    for (let lz = -1; lz <= 1; lz++) {
+                        for (let ly = 0; ly < 3; ly++) {
+                            if (Math.abs(lx) === 1 && Math.abs(lz) === 1 && ly === 2) continue;
+                            if (lx === 0 && lz === 0 && ly < 2) continue; 
+                            const lk = `${x + lx},${startY + 2 + ly},${z + lz}`;
+                            if (!brokenSet.has(lk) && !savedPlaced[lk]) buildBlockMesh(x + lx, startY + 2 + ly, z + lz, 'leaves');
+                        }
+                    }
+                }
+            }
+        }
+
         function generateInstantSpawnZone(centerX, centerZ, radius) {
             for (let x = centerX - radius; x <= centerX + radius; x++) {
                 for (let z = centerZ - radius; z <= centerZ + radius; z++) {
@@ -350,11 +509,17 @@
                                 buildBlockMesh(x, y, z, 'water');
                             }
                         }
+                        
+                        // Seed trees directly into initial grass columns
+                        if (!isTutorialMode && baseHeight > 3 && Math.abs(Math.sin(x * 5 + z * 13)) < 0.04) {
+                            spawnRandomTree(x, baseHeight, z);
+                        }
                     }
                 }
             }
         }
 
+        /* */
         function syncTerrainArea() {
             const pX = Math.floor(camera.position.x);
             const pZ = Math.floor(camera.position.z);
@@ -378,29 +543,6 @@
                     for (let [bKey, mesh] of activeWorldMap) {
                         const [bx, , bz] = bKey.split(',').map(Number);
                         if (bx === cx && bz === cz) { scene.remove(mesh); activeWorldMap.delete(bKey); }
-                    }
-                }
-            }
-        }
-
-        function generateStructure(startX, startY, startZ, type) {
-            if (type === 'village') {
-                for (let x = 0; x < 4; x++) {
-                    for (let z = 0; z < 4; z++) {
-                        for (let y = 0; y < 3; y++) {
-                            let bk = `${startX+x},${startY+y},${startZ+z}`;
-                            if (brokenSet.has(bk)) continue;
-                            if (y === 0) buildBlockMesh(startX+x, startY+y, startZ+z, 'cobble');
-                            else if (y === 2) buildBlockMesh(startX+x, startY+y, startZ+z, 'leaves');
-                            else buildBlockMesh(startX+x, startY+y, startZ+z, 'wood');
-                        }
-                    }
-                }
-            } else if (type === 'stronghold') {
-                for (let x = 0; x < 5; x++) {
-                    for (let z = 0; z < 5; z++) {
-                        let bk = `${startX+x},${startY},${startZ+z}`;
-                        if (!brokenSet.has(bk)) buildBlockMesh(startX+x, startY, startZ+z, 'stonebrick');
                     }
                 }
             }
@@ -431,9 +573,15 @@
                         buildBlockMesh(item.x, y, item.z, 'water');
                     }
                 }
+
+                // Random Trees Variety Generation
+                if (!isTutorialMode && baseHeight > 3 && Math.abs(Math.sin(item.x * 5 + item.z * 13)) < 0.04) {
+                    spawnRandomTree(item.x, baseHeight, item.z);
+                }
             }
         }
 
+        /* */
         function drawHeartsHUD() {
             const row = document.getElementById('hearts-row');
             row.innerHTML = '';
@@ -456,7 +604,49 @@
             document.getElementById('hunger-status').innerText = `Hunger: ${hunger}/20`;
         }
 
-        let gameActive = false, invOpen = false;
+        function drawBubblesHUD() {
+            const row = document.getElementById('bubbles-row');
+            row.innerHTML = '';
+            for (let i = 0; i < 10; i++) {
+                const bSpan = document.createElement('span');
+                bSpan.className = 'bubble';
+                if (i < bubbles) {
+                    bSpan.innerText = '🫧';
+                } else {
+                    bSpan.innerText = '';
+                }
+                row.appendChild(bSpan);
+            }
+        }
+
+        // Clean custom replacement for native alert systems
+        function displayToastNotification(msg) {
+            const toast = document.getElementById('ui-notifier');
+            toast.innerText = msg;
+            toast.style.display = 'block';
+            setTimeout(() => {
+                toast.style.display = 'none';
+            }, 3000);
+        }
+
+        /* */
+        function triggerDeathScreen() {
+            if (isDead) return;
+            isDead = true;
+            gameActive = false;
+            document.exitPointerLock();
+            
+            // Set final score (based on blocks mined/broken)
+            document.getElementById('death-score').innerText = `Score: ${brokenSet.size * 10}`;
+            
+            document.getElementById('death-screen').style.display = 'flex';
+            document.getElementById('crosshair').style.display = 'none';
+            document.getElementById('inv-toggle-btn').style.display = 'none';
+            document.getElementById('gamemode-btn').style.display = 'none';
+            document.getElementById('save-btn').style.display = 'none';
+            document.getElementById('hud-container').style.display = 'none';
+            document.getElementById('hotbar-container').style.display = 'none';
+        }
 
         function launchGameUI() {
             document.getElementById('main-menu').style.display = 'none';
@@ -466,8 +656,10 @@
             document.getElementById('save-btn').style.display = 'block';
             document.getElementById('hud-container').style.display = 'flex';
             document.getElementById('hotbar-container').style.display = 'flex';
+            document.getElementById('death-screen').style.display = 'none';
             
             gameActive = true;
+            isDead = false;
             velocityY = 0; 
             
             if (!isTutorialMode) {
@@ -475,23 +667,51 @@
             }
             syncTerrainArea();
             drawHeartsHUD();
+            drawBubblesHUD();
             spawnMobEntity();
         }
 
         function spawnMobEntity() {
             if (!gameActive) return;
-            const mobMesh = new THREE.Mesh(new THREE.BoxGeometry(0.8, 1.8, 0.8), mobMat);
-            mobMesh.position.set(camera.position.x + (Math.random() - 0.5) * 15, camera.position.y + 6, camera.position.z + (Math.random() - 0.5) * 15);
-            scene.add(mobMesh);
-            mobs.push({ mesh: mobMesh, hp: 5 });
+            const mobGroup = createZombieMesh();
+            let sx = camera.position.x + (Math.random() - 0.5) * 15;
+            let sz = camera.position.z + (Math.random() - 0.5) * 15;
+            let sy = getTerrainHeight(Math.round(sx), Math.round(sz)) + 0.5;
+            mobGroup.position.set(sx, sy, sz);
+            scene.add(mobGroup);
+            mobs.push({ mesh: mobGroup, hp: 5 });
             setTimeout(spawnMobEntity, 14000); 
         }
 
+        /* */
         document.getElementById('btn-singleplayer').addEventListener('click', (e) => {
             e.stopPropagation();
             music.play().catch(() => console.log("Sound context awaiting trigger"));
             isTutorialMode = false;
+            if(health <= 0) { health = 20; hunger = 20; bubbles = 10; camera.position.set(8, 12, 8); }
             launchGameUI();
+        });
+
+        document.getElementById('btn-respawn').addEventListener('click', () => {
+            health = 20;
+            hunger = 20;
+            bubbles = 10;
+            camera.position.set(8, 12, 8);
+            rot = { yaw: -0.7, pitch: -0.3 };
+            camera.quaternion.setFromEuler(new THREE.Euler(rot.pitch, rot.yaw, 0, 'YXZ'));
+            
+            // Clear maps to prevent overlaps
+            activeWorldMap.forEach(m => scene.remove(m));
+            activeWorldMap.clear();
+            loadedColumns.clear();
+            chunkGenerationQueue = [];
+            
+            launchGameUI();
+        });
+
+        document.getElementById('btn-mainmenu').addEventListener('click', () => {
+            document.getElementById('death-screen').style.display = 'none';
+            document.getElementById('main-menu').style.display = 'flex';
         });
 
         document.getElementById('btn-multiplayer').addEventListener('click', (e) => {
@@ -504,10 +724,12 @@
         document.getElementById('btn-mp-host').addEventListener('click', () => {
             document.getElementById('mp-screen').style.display = 'none';
             launchGameUI();
+            displayToastNotification("Hosting LAN game server on local network mesh...");
         });
         document.getElementById('btn-mp-join').addEventListener('click', () => {
             document.getElementById('mp-screen').style.display = 'none';
             launchGameUI();
+            displayToastNotification("Connecting to Local IP host " + document.getElementById('mp-ip').value);
         });
 
         document.getElementById('btn-tutorial').addEventListener('click', (e) => {
@@ -520,35 +742,114 @@
             try {
                 localStorage.setItem('mc_inf_placed', JSON.stringify(savedPlaced));
                 localStorage.setItem('mc_inf_broken', JSON.stringify(Array.from(brokenSet)));
-                alert("World Saved!");
-            } catch(err){}
+                displayToastNotification("World Saved!");
+            } catch(e){}
         });
 
         document.getElementById('gamemode-btn').addEventListener('click', () => {
             gameMode = (gameMode === "SURVIVAL") ? "CREATIVE" : "SURVIVAL";
             document.getElementById('gamemode-btn').innerText = gameMode;
             drawHeartsHUD();
+            updateHotbarDOM();
         });
 
         const optScreen = document.getElementById('options-screen');
         document.getElementById('btn-options').addEventListener('click', (e) => { e.stopPropagation(); optScreen.style.display = 'flex'; });
         document.getElementById('opt-done').addEventListener('click', (e) => { e.stopPropagation(); optScreen.style.display = 'none'; });
 
+        /* */
         const invScreen = document.getElementById('inventory-screen');
         function toggleInventory() {
             if(!gameActive) return;
             invOpen = !invOpen;
+            if (invOpen) {
+                rebuildInventoryUI();
+                document.exitPointerLock(); 
+            } else {
+                if (isCursorLocked) {
+                    renderer.domElement.requestPointerLock();
+                }
+            }
             invScreen.style.display = invOpen ? 'flex' : 'none';
         }
         document.getElementById('inv-toggle-btn').addEventListener('click', (e) => { e.stopPropagation(); toggleInventory(); });
         document.getElementById('btn-close-inv').addEventListener('click', (e) => { e.stopPropagation(); toggleInventory(); });
 
+        function rebuildInventoryUI() {
+            const gridBox = document.getElementById('storage-grid');
+            gridBox.innerHTML = '';
+            
+            let hasItems = false;
+            Object.keys(playerInventory).forEach(t => {
+                const count = playerInventory[t];
+                if (count > 0) {
+                    hasItems = true;
+                    const item = document.createElement('div'); 
+                    item.className = 'inv-item';
+                    item.style.position = 'relative';
+                    
+                    const icon = document.createElement('div'); 
+                    icon.className = 'slot-icon';
+                    icon.style.backgroundColor = itemColors[t]; 
+                    item.appendChild(icon);
+                    
+                    const badge = document.createElement('div');
+                    badge.style.position = 'absolute';
+                    badge.style.bottom = '2px';
+                    badge.style.right = '4px';
+                    badge.style.color = '#fff';
+                    badge.style.fontSize = '12px';
+                    badge.style.fontWeight = 'bold';
+                    badge.style.fontFamily = 'monospace';
+                    badge.style.textShadow = '1px 1px #000';
+                    badge.innerText = count;
+                    item.appendChild(badge);
+                    
+                    item.addEventListener('click', () => { 
+                        hotbarSlots[selectedHotbarIdx] = t; 
+                        updateHotbarDOM(); 
+                        toggleInventory(); 
+                    });
+                    gridBox.appendChild(item);
+                }
+            });
+            
+            if (!hasItems) {
+                const msg = document.createElement('div');
+                msg.style.color = '#333';
+                msg.style.fontFamily = 'monospace';
+                msg.style.fontSize = '12px';
+                msg.style.textAlign = 'center';
+                msg.style.gridColumn = 'span 4';
+                msg.innerText = "Inventory Empty! Break blocks to gather items.";
+                gridBox.appendChild(msg);
+            }
+        }
+
+        /* */
         function updateHotbarDOM() {
             for(let i=0; i<9; i++) {
                 const el = document.getElementById('s'+i); el.innerHTML = '';
-                if(hotbarSlots[i]) {
+                const itemType = hotbarSlots[i];
+                if(itemType) {
                     const icon = document.createElement('div'); icon.className = 'slot-icon';
-                    icon.style.backgroundColor = itemColors[hotbarSlots[i]]; el.appendChild(icon);
+                    icon.style.backgroundColor = itemColors[itemType]; el.appendChild(icon);
+                    
+                    if (gameMode === "SURVIVAL") {
+                        const count = playerInventory[itemType] || 0;
+                        const countEl = document.createElement('div');
+                        countEl.style.position = 'absolute';
+                        countEl.style.bottom = '1px';
+                        countEl.style.right = '3px';
+                        countEl.style.color = '#fff';
+                        countEl.style.fontSize = '10px';
+                        countEl.style.fontWeight = 'bold';
+                        countEl.style.fontFamily = 'monospace';
+                        countEl.style.textShadow = '1px 1px #000';
+                        countEl.innerText = count;
+                        el.style.position = 'relative';
+                        el.appendChild(countEl);
+                    }
                 }
                 if(i === selectedHotbarIdx) el.classList.add('selected'); else el.classList.remove('selected');
             }
@@ -556,14 +857,6 @@
         for(let i=0; i<9; i++) {
             document.getElementById('s'+i).addEventListener('click', (e) => { e.stopPropagation(); selectedHotbarIdx = i; updateHotbarDOM(); });
         }
-        const gridBox = document.getElementById('storage-grid');
-        blockTypes.forEach(t => {
-            const item = document.createElement('div'); item.className = 'inv-item';
-            const icon = document.createElement('div'); icon.className = 'slot-icon';
-            icon.style.backgroundColor = itemColors[t]; item.appendChild(icon);
-            item.addEventListener('click', () => { hotbarSlots[selectedHotbarIdx] = t; updateHotbarDOM(); toggleInventory(); });
-            gridBox.appendChild(item);
-        });
         updateHotbarDOM();
 
         const highlightOutline = new THREE.LineSegments(new THREE.EdgesGeometry(new THREE.BoxGeometry(1.02, 1.02, 1.02)), new THREE.LineBasicMaterial({ color: 0xffffff }));
@@ -576,26 +869,66 @@
             return raycaster.intersectObjects(Array.from(activeWorldMap.values()))[0] || null;
         }
 
+        /* */
         function doBreakBlock() {
+            const activeItem = hotbarSlots[selectedHotbarIdx];
+            if (activeItem === 'apple') {
+                triggerArmSwing();
+                if (hunger < 20) {
+                    hunger = Math.min(20, hunger + 4);
+                    drawHeartsHUD();
+                    if (gameMode === "SURVIVAL") {
+                        playerInventory['apple']--;
+                        if (playerInventory['apple'] <= 0) hotbarSlots[selectedHotbarIdx] = null;
+                        updateHotbarDOM();
+                    }
+                }
+                return; 
+            }
+
             raycaster.setFromCamera(pointerCenter, camera);
-            const mobHits = raycaster.intersectObjects(mobs.map(m => m.mesh));
+            const mobHits = raycaster.intersectObjects(mobs.map(m => m.mesh), true);
             if (mobHits.length > 0) {
                 triggerArmSwing();
                 let hitMobObj = mobHits[0].object;
-                let mobData = mobs.find(m => m.mesh === hitMobObj);
+                let mobData = mobs.find(m => m.mesh === hitMobObj || hitMobObj.parent === m.mesh);
                 if (mobData) {
-                    mobData.hp -= 2; mobMesh = hitMobObj; mobMesh.position.y += 0.3;
-                    if (mobData.hp <= 0) { scene.remove(hitMobObj); mobs = mobs.filter(m => m.mesh !== hitMobObj); }
+                    mobData.hp -= 2; 
+                    let rootMesh = mobData.mesh;
+                    rootMesh.position.y += 0.3;
+                    if (mobData.hp <= 0) { scene.remove(rootMesh); mobs = mobs.filter(m => m !== mobData); }
                 }
                 return;
             }
 
             const hit = getLookingAtBlock();
             if (hit) {
+                const bType = hit.object.userData.type;
+                if (bType === 'water') return; // PROTECTED: CANNOT MINE WATER
+
                 triggerArmSwing();
                 const k = hit.object.userData.key;
                 scene.remove(hit.object); activeWorldMap.delete(k);
-                if (!isTutorialMode) { if (savedPlaced[k]) delete savedPlaced[k]; else brokenSet.add(k); }
+                
+                if (!isTutorialMode) { 
+                    if (savedPlaced[k]) delete savedPlaced[k]; else brokenSet.add(k); 
+                    
+                    if (bType === 'leaves') {
+                        if (Math.random() < 0.2) {
+                            playerInventory['apple'] = (playerInventory['apple'] || 0) + 1;
+                        } else {
+                            playerInventory['stick'] = (playerInventory['stick'] || 0) + 1;
+                        }
+                    } else {
+                        // Drop collection item logic
+                        if (playerInventory[bType] !== undefined) {
+                            playerInventory[bType]++;
+                        } else {
+                            playerInventory[bType] = 1;
+                        }
+                    }
+                    updateHotbarDOM();
+                }
                 highlightOutline.visible = false;
             }
         }
@@ -604,7 +937,12 @@
             const hit = getLookingAtBlock();
             if (hit) {
                 const targetBlock = hotbarSlots[selectedHotbarIdx];
-                if (!targetBlock) return; 
+                if (!targetBlock || targetBlock === 'apple' || targetBlock === 'stick') return; 
+
+                // Survival stock verification check
+                if (gameMode === "SURVIVAL" && (!playerInventory[targetBlock] || playerInventory[targetBlock] <= 0)) {
+                    return; 
+                }
 
                 triggerArmSwing();
                 const n = hit.face.normal;
@@ -615,32 +953,36 @@
 
                 if (!activeWorldMap.has(newKey)) {
                     buildBlockMesh(nx, ny, nz, targetBlock);
-                    if (!isTutorialMode) savedPlaced[newKey] = targetBlock;
+                    if (!isTutorialMode) {
+                        savedPlaced[newKey] = targetBlock;
+                        if (gameMode === "SURVIVAL") {
+                            playerInventory[targetBlock]--;
+                            if (playerInventory[targetBlock] <= 0) {
+                                hotbarSlots[selectedHotbarIdx] = null; // Clear hotbar stack
+                            }
+                            updateHotbarDOM();
+                        }
+                    }
                 }
             }
         }
 
-        // --- COMPUTER POINTER LOCK INTEGRATION ---
         let isCursorLocked = false;
         
-        // Listen for Pointer Lock change events to cleanly toggle HUD cursor state variables
         document.addEventListener('pointerlockchange', () => {
             isCursorLocked = (document.pointerLockElement === renderer.domElement);
         });
 
-        // Click canvas frame to request active hardware focus lock on Desktop
         renderer.domElement.addEventListener('click', () => {
             if (gameActive && !invOpen && optScreen.style.display !== 'flex') {
                 renderer.domElement.requestPointerLock();
             }
         });
 
-        // Native Mouse Movement processing raw delta increments
         window.addEventListener('mousemove', (e) => {
             if (!gameActive || invOpen) return;
             
             if (isCursorLocked) {
-                // Perfect, raw, zero-drag, lag-free first-person look!
                 rot.yaw -= e.movementX * 0.0025;
                 rot.pitch -= e.movementY * 0.0025;
                 rot.pitch = Math.max(-Math.PI / 2.2, Math.min(Math.PI / 2.2, rot.pitch));
@@ -648,14 +990,12 @@
             }
         });
 
-        // Bind interactive mouse clicks natively
         window.addEventListener('mousedown', (e) => {
             if (!gameActive || invOpen || !isCursorLocked) return;
-            if (e.button === 0) doBreakBlock(); // Left Click
-            if (e.button === 2) doPlaceBlock(); // Right Click
+            if (e.button === 0) doBreakBlock(); 
+            if (e.button === 2) doPlaceBlock(); 
         });
 
-        // Mouse scroll wheel support to change active hotbar slot
         window.addEventListener('wheel', (e) => {
             if (!gameActive || invOpen) return;
             if (e.deltaY > 0) {
@@ -672,6 +1012,7 @@
             if (hit) { highlightOutline.position.copy(hit.object.position); highlightOutline.visible = true; } else highlightOutline.visible = false;
         }
 
+        /* */
         const moves = { fwd: false, bwd: false, lft: false, rgt: false };
         const speed = 0.08;
         let velocityY = 0; const GRAVITY = -0.005, JUMP_FORCE = 0.095, PLAYER_HEIGHT = 1.5;
@@ -723,9 +1064,9 @@
                 velocityY += GRAVITY; camera.position.y += velocityY; isGrounded = false;
                 const meshes = Array.from(activeWorldMap.values());
                 for (let i = 0; i < meshes.length; i++) {
-                    const m = meshes[i]; if (m.userData.type === 'water') continue;
-                    if (Math.abs(camera.position.x - m.position.x) < 0.55 && Math.abs(camera.position.z - m.position.z) < 0.55) {
-                        const floorY = m.position.y + 0.5 + PLAYER_HEIGHT;
+                    const b = meshes[i]; if (b.userData.type === 'water') continue;
+                    if (Math.abs(camera.position.x - b.position.x) < 0.55 && Math.abs(camera.position.z - b.position.z) < 0.55) {
+                        const floorY = b.position.y + 0.5 + PLAYER_HEIGHT;
                         if (camera.position.y <= floorY && camera.position.y > floorY - 0.4 && velocityY <= 0) {
                             camera.position.y = floorY; velocityY = 0; isGrounded = true;
                         }
@@ -735,11 +1076,13 @@
             if (camera.position.y < -30) { camera.position.set(8, 12, 8); velocityY = 0; }
         }
 
+        /* */
         let betaTickCount = 0;
         function updateBetaSystems() {
             if (!gameActive) return;
             betaTickCount++;
 
+            // Hunger updates
             if (gameMode === "SURVIVAL" && betaTickCount % 200 === 0) {
                 hungerTimer++;
                 if (hungerTimer >= 5) {
@@ -749,30 +1092,106 @@
                 }
             } else if (gameMode === "CREATIVE") { health = 20; hunger = 20; }
 
+            // Submerged Drowning Logic
+            let now = Date.now();
+            let px = Math.round(camera.position.x);
+            let py = Math.floor(camera.position.y);
+            let pz = Math.round(camera.position.z);
+            let checkBlock = activeWorldMap.get(`${px},${py},${pz}`);
+            
+            let submerged = (checkBlock && checkBlock.userData.type === 'water') || (camera.position.y <= 2.4 && getTerrainHeight(px, pz) <= 2);
+
+            if (submerged && gameMode === "SURVIVAL" && gameActive) {
+                document.getElementById('bubbles-row').style.display = 'flex';
+                if (now - lastSubmergedCheckTime >= 1000) {
+                    lastSubmergedCheckTime = now;
+                    if (bubbles > 0) {
+                        bubbles--;
+                        drawBubblesHUD();
+                    } else {
+                        if (now - lastDrownDamageTime >= 1000) {
+                            lastDrownDamageTime = now;
+                            health -= 2; // Lose 1 heart (2HP)
+                            drawHeartsHUD();
+                            if (health <= 0) {
+                                triggerDeathScreen();
+                            }
+                        }
+                    }
+                }
+            } else {
+                if (bubbles < 10 && now - lastSubmergedCheckTime >= 150) {
+                    lastSubmergedCheckTime = now;
+                    bubbles++;
+                    drawBubblesHUD();
+                }
+                if (bubbles === 10) {
+                    document.getElementById('bubbles-row').style.display = 'none';
+                }
+            }
+
             mobs.forEach(mob => {
                 let dirX = camera.position.x - mob.mesh.position.x;
                 let dirZ = camera.position.z - mob.mesh.position.z;
                 let len = Math.sqrt(dirX*dirX + dirZ*dirZ);
                 
-                if (len > 0.5) {
-                    mob.mesh.position.x += (dirX / len) * 0.035;
-                    mob.mesh.position.z += (dirZ / len) * 0.035;
+                if (len < 5.0) {
+                    if (len > 0.1) {
+                        mob.mesh.rotation.y = Math.atan2(dirX, dirZ);
+                    }
+                    if (len > 0.8) {
+                        mob.mesh.position.x += (dirX / len) * 0.035;
+                        mob.mesh.position.z += (dirZ / len) * 0.035;
+                        
+                        let t = Date.now() * 0.005;
+                        if(mob.mesh.children.length >= 4) {
+                            mob.mesh.children[2].rotation.x = Math.sin(t) * 0.5; 
+                            mob.mesh.children[3].rotation.x = Math.sin(t + Math.PI) * 0.5; 
+                        }
+                    } else {
+                        if(mob.mesh.children.length >= 4) {
+                            mob.mesh.children[2].rotation.x = 0;
+                            mob.mesh.children[3].rotation.x = 0;
+                        }
+                    }
+                } else {
+                    if(mob.mesh.children.length >= 4) {
+                        mob.mesh.children[2].rotation.x = 0;
+                        mob.mesh.children[3].rotation.x = 0;
+                    }
                 }
 
-                let groundY = getTerrainHeight(Math.round(mob.mesh.position.x), Math.round(mob.mesh.position.z)) + 1.4;
+                let mx = Math.round(mob.mesh.position.x);
+                let mz = Math.round(mob.mesh.position.z);
+                let my = Math.floor(mob.mesh.position.y);
+                
+                let highestY = getTerrainHeight(mx, mz);
+                for(let checkY = my + 2; checkY >= -5; checkY--) {
+                    let k = `${mx},${checkY},${mz}`;
+                    if(activeWorldMap.has(k) && activeWorldMap.get(k).userData.type !== 'water') {
+                        highestY = checkY;
+                        break;
+                    }
+                }
+                let groundY = highestY + 0.5;
+
                 if (mob.mesh.position.y > groundY) {
                     mob.mesh.position.y += GRAVITY * 1.5;
                 } else {
                     mob.mesh.position.y = groundY;
                 }
 
-                if (len < 1.5 && gameMode === "SURVIVAL" && betaTickCount % 60 === 0) {
+                if (len < 1.0 && Math.abs(camera.position.y - mob.mesh.position.y) < 2.0 && gameMode === "SURVIVAL" && betaTickCount % 60 === 0) {
                     health -= 2; 
                     drawHeartsHUD();
+                    if (health <= 0) {
+                        triggerDeathScreen();
+                    }
                 }
             });
         }
 
+        /* */
         let loopTick = 0;
         function animate() {
             requestAnimationFrame(animate);
